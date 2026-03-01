@@ -1,0 +1,591 @@
+{
+  "name": "Autopilot Social — Official Workflow",
+  "nodes": [
+
+    {
+      "id": "sched-6h",
+      "name": "⏰ Every 6 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [160, 280],
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours", "hoursInterval": 6 }] }
+      }
+    },
+
+    {
+      "id": "sched-monday",
+      "name": "📅 Monday 8am",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [160, 560],
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 8 * * 1" }] }
+      }
+    },
+
+    {
+      "id": "sched-30m",
+      "name": "⚡ Every 30 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [160, 840],
+      "parameters": {
+        "rule": { "interval": [{ "field": "minutes", "minutesInterval": 30 }] }
+      }
+    },
+
+    {
+      "id": "wh-send",
+      "name": "🔔 Webhook: N8N_SEND_MESSAGE_WEBHOOK",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [160, 1120],
+      "webhookId": "send-message",
+      "parameters": {
+        "path": "send-message",
+        "httpMethod": "POST",
+        "responseMode": "lastNode",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "wh-test",
+      "name": "🔔 Webhook: N8N_TEST_WEBHOOK",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [160, 1340],
+      "webhookId": "test",
+      "parameters": {
+        "path": "test",
+        "httpMethod": "POST",
+        "responseMode": "lastNode",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "pipeline-run",
+      "name": "🚀 POST /api/pipeline/run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 280],
+      "parameters": {
+        "url": "http://192.168.0.1148000/api/pipeline/run",
+        "method": "POST",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [{ "name": "trigger", "value": "scheduled" }]
+        },
+        "options": { "timeout": 60000 }
+      }
+    },
+
+    {
+      "id": "pipeline-wait",
+      "name": "⏳ Wait 30s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [640, 280],
+      "parameters": { "amount": 30, "unit": "seconds" }
+    },
+
+    {
+      "id": "pipeline-status",
+      "name": "📡 GET /api/pipeline/status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 280],
+      "parameters": {
+        "url": "http://192.168.0.1148000/api/pipeline/status",
+        "method": "GET",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "pipeline-check",
+      "name": "✅ Status = completed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1120, 280],
+      "parameters": {
+        "conditions": {
+          "string": [{
+            "value1": "={{ $json.status }}",
+            "operation": "equals",
+            "value2": "completed"
+          }]
+        }
+      }
+    },
+
+    {
+      "id": "pipeline-retry",
+      "name": "🔁 Wait 15s & Retry",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1120, 440],
+      "parameters": { "amount": 15, "unit": "seconds" }
+    },
+
+    {
+      "id": "get-summary",
+      "name": "📊 GET /api/contacts/summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1380, 200],
+      "parameters": {
+        "url": "http://192.168.0.1148000/api/contacts/summary",
+        "method": "GET",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "get-actions",
+      "name": "📋 GET /api/actions?status=pending",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1380, 360],
+      "parameters": {
+        "url": "http://192.168.0.1148000/api/actions/?status=pending",
+        "method": "GET",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "router",
+      "name": "⚙️ Split Actions by Urgency",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1640, 280],
+      "parameters": {
+        "jsCode": "// ── URGENCY ROUTER ─────────────────────────────────────────────────────────\n// Spec: urgency values = critical | high | medium | low  (always lowercase)\n//       status values  = pending | sent | dismissed | snoozed\n//       trend values   = improving | stable | at_risk | declining\n//       tag values     = close_friend | family | work | mentor | romantic | acquaintance\n//       health_score   = 0-100 integer\n\nconst summary = $('📊 GET /api/contacts/summary').item.json;\nconst raw     = $('📋 GET /api/actions?status=pending').item.json;\n\n// Actions array may be top-level or nested under .actions\nconst actions = Array.isArray(raw) ? raw : (raw.actions || []);\n\n// Split into urgency buckets\nconst buckets = { critical: [], high: [], medium: [], low: [] };\nfor (const a of actions) {\n  const u = (a.urgency || 'low').toLowerCase();\n  (buckets[u] || buckets.low).push(a);\n}\n\n// Normalise one action into a clean object\nconst fmt = a => ({\n  action_id:         String(a.action_id || ''),\n  contact_id:        a.contact_id        || '',\n  contact_name:      a.contact_name      || 'Unknown',\n  tag:               a.tag               || '',\n  urgency:           (a.urgency          || 'low').toLowerCase(),\n  action_type:       a.action_type       || 'reconnect',\n  reason:            a.reason            || '',\n  suggested_message: a.suggested_message || '',\n  phone_number:      a.phone_number      || '',\n  status:            a.status            || 'pending',\n});\n\nreturn [{ json: {\n  critical:       buckets.critical.map(fmt),\n  high:           buckets.high.map(fmt),\n  medium:         buckets.medium.map(fmt),\n  low:            buckets.low.map(fmt),\n  total:          actions.length,\n  critical_count: buckets.critical.length,\n  high_count:     buckets.high.length,\n  avg_health:     Math.round(summary.avg_health_score || 0),\n  total_contacts: summary.total           || 0,\n  ghosted_count:  summary.ghosted_count   || 0,\n  drifting_count: summary.drifting_count  || 0,\n  has_critical:   buckets.critical.length > 0,\n  has_any:        actions.length > 0,\n}}];"
+      }
+    },
+
+    {
+      "id": "check-critical",
+      "name": "🔴 Has CRITICAL actions?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1900, 200],
+      "parameters": {
+        "conditions": {
+          "number": [{ "value1": "={{ $json.critical_count }}", "operation": "larger", "value2": 0 }]
+        }
+      }
+    },
+
+    {
+      "id": "check-any",
+      "name": "📬 Has ANY pending actions?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1900, 380],
+      "parameters": {
+        "conditions": {
+          "number": [{ "value1": "={{ $json.total }}", "operation": "larger", "value2": 0 }]
+        }
+      }
+    },
+
+    {
+      "id": "build-critical",
+      "name": "📝 Build Critical Alert Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2160, 120],
+      "parameters": {
+        "jsCode": "// CRITICAL ALERT — fires when urgency=critical actions exist\n// Tag colour palette matches the frontend neo-brutalism design system\nconst d   = $input.item.json;\nconst now = new Date().toLocaleDateString('en-IN', {\n  weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'\n});\n\n// Tag colours — close_friend|family|work|mentor|romantic|acquaintance\nconst TAG_BG = { close_friend:'#AFFFB0', family:'#7B61FF', work:'#00BFFF', mentor:'#F5FF4E', romantic:'#FF6BBA', acquaintance:'#e0e0e0' };\nconst TAG_FG = { family:'#fff', close_friend:'#111', work:'#111', mentor:'#111', romantic:'#111', acquaintance:'#555' };\n\nconst card = a => {\n  const tag = a.tag\n    ? `<span style=\"background:${TAG_BG[a.tag]||'#e0e0e0'};color:${TAG_FG[a.tag]||'#111'};border:1.5px solid #111;padding:1px 8px;font-size:9px;font-weight:800;letter-spacing:1px;margin-left:8px;vertical-align:middle;\">${a.tag.replace(/_/g,' ').toUpperCase()}</span>`\n    : '';\n  return `\n  <div style=\"border:3px solid #FF4545;background:#fff;padding:16px 18px;margin-bottom:14px;box-shadow:5px 5px 0 #FF4545;\">\n    <div style=\"display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;\">\n      <div style=\"line-height:1.6;\"><b style=\"font-size:15px;\">${a.contact_name}</b>${tag}</div>\n      <span style=\"background:#FF4545;color:#fff;padding:3px 10px;font-size:10px;font-weight:800;letter-spacing:1px;border:1px solid #111;white-space:nowrap;margin-left:12px;\">CRITICAL</span>\n    </div>\n    <div style=\"background:#111;color:#AFFFB0;display:inline-block;padding:2px 9px;font-size:10px;font-weight:800;letter-spacing:2px;margin-bottom:8px;\">${a.action_type.replace(/_/g,' ').toUpperCase()}</div>\n    <div style=\"font-size:12px;color:#555;margin-bottom:10px;\">${a.reason}</div>\n    <div style=\"background:#fffbf5;border-left:4px solid #FF4545;padding:10px 14px;font-style:italic;font-size:13px;line-height:1.5;\">&ldquo;${a.suggested_message}&rdquo;</div>\n  </div>`;\n};\n\nreturn [{ json: {\n  subject: `🔴 CRITICAL — ${d.critical_count} relationship(s) need attention NOW`,\n  html: `<!DOCTYPE html><html><body style=\"font-family:monospace;background:#F5F0E8;margin:0;padding:0;\">\n<div style=\"max-width:600px;margin:0 auto;padding:24px;\">\n\n  <div style=\"background:#111;color:#AFFFB0;padding:18px 22px;border:3px solid #111;\">\n    <div style=\"font-size:28px;letter-spacing:4px;font-weight:800;\">AUTOPILOT SOCIAL</div>\n    <div style=\"color:#FF4545;font-size:10px;letter-spacing:3px;margin-top:6px;\">🔴 CRITICAL ALERT &nbsp;·&nbsp; ${now}</div>\n  </div>\n\n  <div style=\"background:#FF4545;color:#fff;border:3px solid #111;border-top:none;padding:12px 22px;font-weight:800;letter-spacing:1px;\">\n    ${d.critical_count} CONTACT(S) NEED YOUR ATTENTION TODAY\n  </div>\n\n  <div style=\"background:#fff;border:3px solid #111;border-top:none;padding:20px 20px 6px;\">\n    ${d.critical.map(card).join('')}\n  </div>\n\n  <div style=\"display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px;\">\n    <div style=\"background:#AFFFB0;border:3px solid #111;padding:14px;text-align:center;box-shadow:4px 4px 0 #111;\"><div style=\"font-size:9px;letter-spacing:2px;opacity:.6;\">CONTACTS</div><div style=\"font-size:32px;font-weight:800;\">${d.total_contacts}</div></div>\n    <div style=\"background:#fff;border:3px solid #111;padding:14px;text-align:center;box-shadow:4px 4px 0 #7B61FF;\"><div style=\"font-size:9px;letter-spacing:2px;opacity:.6;\">AVG HEALTH</div><div style=\"font-size:32px;font-weight:800;color:#7B61FF;\">${d.avg_health}</div></div>\n    <div style=\"background:#fff;border:3px solid #111;padding:14px;text-align:center;box-shadow:4px 4px 0 #FF4545;\"><div style=\"font-size:9px;letter-spacing:2px;opacity:.6;\">GHOSTED</div><div style=\"font-size:32px;font-weight:800;color:#FF4545;\">${d.ghosted_count}</div></div>\n    <div style=\"background:#F5FF4E;border:3px solid #111;padding:14px;text-align:center;box-shadow:4px 4px 0 #111;\"><div style=\"font-size:9px;letter-spacing:2px;opacity:.6;\">AT RISK</div><div style=\"font-size:32px;font-weight:800;\">${d.drifting_count}</div></div>\n  </div>\n\n  <div style=\"margin-top:14px;font-size:10px;opacity:.35;text-align:center;letter-spacing:2px;\">AUTOPILOT SOCIAL &nbsp;·&nbsp; AUTOMATED DIGEST</div>\n</div></body></html>`,\n}}];"
+      }
+    },
+
+    {
+      "id": "build-digest",
+      "name": "📝 Build 6h Digest Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2160, 380],
+      "parameters": {
+        "jsCode": "// 6H DIGEST — all pending actions grouped by urgency\nconst d   = $input.item.json;\nconst now = new Date().toLocaleDateString('en-IN', {\n  weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'\n});\n\nconst TAG_BG = { close_friend:'#AFFFB0', family:'#7B61FF', work:'#00BFFF', mentor:'#F5FF4E', romantic:'#FF6BBA', acquaintance:'#e0e0e0' };\nconst TAG_FG = { family:'#fff', close_friend:'#111', work:'#111', mentor:'#111', romantic:'#111', acquaintance:'#555' };\nconst URG_BG = { critical:'#FF4545', high:'#F5FF4E', medium:'#D8F0FF', low:'#f0f0f0' };\nconst URG_FG = { critical:'#fff',    high:'#111',    medium:'#111',    low:'#666'  };\n\nconst card = a => {\n  const tag = a.tag\n    ? `<span style=\"background:${TAG_BG[a.tag]||'#e0e0e0'};color:${TAG_FG[a.tag]||'#111'};border:1.5px solid #111;padding:1px 8px;font-size:9px;font-weight:800;letter-spacing:1px;margin-left:8px;vertical-align:middle;\">${a.tag.replace(/_/g,' ').toUpperCase()}</span>`\n    : '';\n  return `\n  <div style=\"border:2px solid #111;background:#fff;padding:14px 16px;margin-bottom:10px;box-shadow:4px 4px 0 #111;\">\n    <div style=\"display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;\">\n      <div style=\"line-height:1.6;\"><b>${a.contact_name}</b>${tag}</div>\n      <span style=\"background:${URG_BG[a.urgency]||'#eee'};color:${URG_FG[a.urgency]||'#111'};border:2px solid #111;padding:2px 9px;font-size:10px;font-weight:800;white-space:nowrap;margin-left:10px;\">${a.urgency.toUpperCase()}</span>\n    </div>\n    <div style=\"font-size:10px;color:#7B61FF;font-weight:800;letter-spacing:1px;margin-bottom:5px;\">${a.action_type.replace(/_/g,' ').toUpperCase()}</div>\n    <div style=\"font-size:11px;color:#666;margin-bottom:9px;\">${a.reason}</div>\n    <div style=\"background:#F5F0E8;border-left:3px solid #111;padding:8px 12px;font-style:italic;font-size:12px;line-height:1.5;\">&ldquo;${a.suggested_message}&rdquo;</div>\n  </div>`;\n};\n\nconst all = [...d.critical, ...d.high, ...d.medium, ...d.low];\n\nreturn [{ json: {\n  subject: `📊 Autopilot Digest — ${d.total} action(s) pending  ·  ${now}`,\n  html: `<!DOCTYPE html><html><body style=\"font-family:monospace;background:#F5F0E8;margin:0;padding:0;\">\n<div style=\"max-width:600px;margin:0 auto;padding:24px;\">\n\n  <div style=\"background:#111;color:#AFFFB0;padding:18px 22px;border:3px solid #111;\">\n    <div style=\"font-size:28px;letter-spacing:4px;font-weight:800;\">AUTOPILOT SOCIAL</div>\n    <div style=\"color:#F5FF4E;font-size:10px;letter-spacing:3px;margin-top:6px;\">6H RELATIONSHIP DIGEST &nbsp;·&nbsp; ${now}</div>\n  </div>\n\n  <div style=\"background:#AFFFB0;border:3px solid #111;border-top:none;padding:12px 22px;font-weight:800;letter-spacing:1px;\">\n    ${d.total} PENDING ACTION(S) &nbsp;·&nbsp; ${d.ghosted_count} GHOSTED &nbsp;·&nbsp; ${d.drifting_count} AT RISK\n  </div>\n\n  <div style=\"background:#fff;border:3px solid #111;border-top:none;padding:18px 18px 6px;\">\n    ${all.length ? all.map(card).join('') : '<div style=\"text-align:center;padding:30px;opacity:.4;letter-spacing:2px;\">ALL CLEAR — NO PENDING ACTIONS</div>'}\n  </div>\n\n  <div style=\"margin-top:14px;font-size:10px;opacity:.35;text-align:center;letter-spacing:2px;\">AUTOPILOT SOCIAL &nbsp;·&nbsp; SENT EVERY 6 HOURS</div>\n</div></body></html>`,\n}}];"
+      }
+    },
+
+    {
+      "id": "email-critical",
+      "name": "📧 Email: Critical Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [2420, 120],
+      "parameters": {
+        "fromEmail": "autopilot@yourdomain.com",
+        "toEmail": "YOUR_EMAIL@gmail.com",
+        "subject": "={{ $json.subject }}",
+        "emailType": "html",
+        "message": "={{ $json.html }}"
+      }
+    },
+
+    {
+      "id": "email-digest",
+      "name": "📧 Email: 6h Digest",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [2420, 380],
+      "parameters": {
+        "fromEmail": "autopilot@yourdomain.com",
+        "toEmail": "YOUR_EMAIL@gmail.com",
+        "subject": "={{ $json.subject }}",
+        "emailType": "html",
+        "message": "={{ $json.html }}"
+      }
+    },
+
+    {
+      "id": "weekly-summary",
+      "name": "📊 Weekly: GET /api/contacts/summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 500],
+      "parameters": {
+        "url": "http://192.168.0.1148000/api/contacts/summary",
+        "method": "GET",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "weekly-at-risk",
+      "name": "⚠️ Weekly: GET contacts trend=at_risk",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 620],
+      "parameters": {
+        "url": "http://192.168.0.1148000/api/contacts/?trend=at_risk",
+        "method": "GET",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "weekly-declining",
+      "name": "📉 Weekly: GET contacts trend=declining",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 740],
+      "parameters": {
+        "url": "http://192.168.0.1148000/api/contacts/?trend=declining",
+        "method": "GET",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "build-weekly",
+      "name": "📝 Build Weekly Report Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 620],
+      "parameters": {
+        "jsCode": "// MONDAY WEEKLY REPORT\n// trend: improving | stable | at_risk | declining\n// tag:   close_friend | family | work | mentor | romantic | acquaintance\n// health_score: 0-100 integer\n\nconst summary  = $('📊 Weekly: GET /api/contacts/summary').item.json;\nconst atRisk   = ($('⚠️ Weekly: GET contacts trend=at_risk').item.json.contacts   || []).slice(0,6);\nconst declining= ($('📉 Weekly: GET contacts trend=declining').item.json.contacts || []).slice(0,6);\n\nconst week = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });\n\nconst TAG_BG = { close_friend:'#AFFFB0', family:'#7B61FF', work:'#00BFFF', mentor:'#F5FF4E', romantic:'#FF6BBA', acquaintance:'#e0e0e0' };\nconst TAG_FG = { family:'#fff', close_friend:'#111', work:'#111', mentor:'#111', romantic:'#111', acquaintance:'#555' };\n\n// trend → arrow icon, background chip colour\nconst TREND_ICON  = { improving:'↑', stable:'→', at_risk:'⚠', declining:'↓' };\nconst TREND_COLOR = { improving:'#AFFFB0', stable:'#e0e0e0', at_risk:'#F5FF4E', declining:'#FF4545' };\nconst TREND_FG    = { improving:'#111', stable:'#555', at_risk:'#111', declining:'#fff' };\n\n// health_score 0-100 → traffic-light colour\nconst scoreColor = s => s >= 70 ? '#AFFFB0' : s >= 40 ? '#F5FF4E' : '#FF4545';\n\nconst contactRow = c => {\n  const score = Math.round(c.health_score || 0);\n  const trend = c.trend || 'stable';\n  const tag   = c.tag\n    ? `<span style=\"background:${TAG_BG[c.tag]||'#e0e0e0'};color:${TAG_FG[c.tag]||'#111'};border:1.5px solid #111;padding:1px 7px;font-size:9px;font-weight:800;letter-spacing:1px;margin-left:8px;\">${c.tag.replace(/_/g,' ').toUpperCase()}</span>`\n    : '';\n  return `\n  <div style=\"border:2px solid #111;background:#fff;padding:12px 14px;margin-bottom:8px;box-shadow:3px 3px 0 #111;display:flex;justify-content:space-between;align-items:center;\">\n    <div>\n      <div style=\"display:flex;align-items:center;flex-wrap:wrap;\"><b>${c.name || c.contact_id}</b>${tag}</div>\n      <div style=\"font-size:10px;color:#888;margin-top:3px;\">${c.total_messages||0} messages &nbsp;·&nbsp; ${c.platform||''}</div>\n    </div>\n    <div style=\"display:flex;align-items:center;gap:8px;\">\n      <span style=\"background:${TREND_COLOR[trend]||'#e0e0e0'};color:${TREND_FG[trend]||'#111'};border:2px solid #111;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;\">${TREND_ICON[trend]||'?'}</span>\n      <span style=\"font-size:26px;font-weight:800;color:${scoreColor(score)};border:2px solid #111;padding:2px 8px;\">${score}</span>\n    </div>\n  </div>`;\n};\n\nconst section = (title, items) => items.length === 0 ? '' : `\n  <div style=\"margin-top:18px;\">\n    <div style=\"font-size:10px;letter-spacing:2px;opacity:.55;border-bottom:2px solid #111;padding-bottom:6px;margin-bottom:10px;\">${title} (${items.length})</div>\n    ${items.map(contactRow).join('')}\n  </div>`;\n\nreturn [{ json: {\n  subject: `📊 Weekly Relationship Report — ${week}`,\n  html: `<!DOCTYPE html><html><body style=\"font-family:monospace;background:#F5F0E8;margin:0;padding:0;\">\n<div style=\"max-width:620px;margin:0 auto;padding:24px;\">\n\n  <div style=\"background:#111;color:#AFFFB0;padding:20px 24px;border:3px solid #111;\">\n    <div style=\"font-size:36px;letter-spacing:5px;font-weight:800;\">AUTOPILOT</div>\n    <div style=\"color:#F5FF4E;font-size:10px;letter-spacing:3px;margin-top:6px;\">WEEKLY RELATIONSHIP REPORT &nbsp;·&nbsp; ${week}</div>\n  </div>\n\n  <div style=\"display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px;\">\n    <div style=\"background:#AFFFB0;border:3px solid #111;padding:14px;text-align:center;box-shadow:4px 4px 0 #111;\"><div style=\"font-size:9px;letter-spacing:2px;opacity:.6;\">CONTACTS</div><div style=\"font-size:34px;font-weight:800;\">${summary.total||0}</div></div>\n    <div style=\"background:#fff;border:3px solid #111;padding:14px;text-align:center;box-shadow:4px 4px 0 #7B61FF;\"><div style=\"font-size:9px;letter-spacing:2px;opacity:.6;\">AVG HEALTH</div><div style=\"font-size:34px;font-weight:800;color:#7B61FF;\">${Math.round(summary.avg_health_score||0)}</div></div>\n    <div style=\"background:#fff;border:3px solid #111;padding:14px;text-align:center;box-shadow:4px 4px 0 #FF4545;\"><div style=\"font-size:9px;letter-spacing:2px;opacity:.6;\">GHOSTED</div><div style=\"font-size:34px;font-weight:800;color:#FF4545;\">${summary.ghosted_count||0}</div></div>\n    <div style=\"background:#F5FF4E;border:3px solid #111;padding:14px;text-align:center;box-shadow:4px 4px 0 #111;\"><div style=\"font-size:9px;letter-spacing:2px;opacity:.6;\">AT RISK</div><div style=\"font-size:34px;font-weight:800;\">${summary.drifting_count||0}</div></div>\n  </div>\n\n  ${section('⚠ AT RISK — NEEDS ATTENTION THIS WEEK', atRisk)}\n  ${section('↓ DECLINING — ENGAGEMENT DROPPING', declining)}\n\n  <div style=\"margin-top:18px;font-size:10px;opacity:.35;text-align:center;letter-spacing:2px;\">AUTOPILOT SOCIAL &nbsp;·&nbsp; EVERY MONDAY 8AM</div>\n</div></body></html>`,\n}}];"
+      }
+    },
+
+    {
+      "id": "email-weekly",
+      "name": "📧 Email: Weekly Report",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1000, 620],
+      "parameters": {
+        "fromEmail": "autopilot@yourdomain.com",
+        "toEmail": "YOUR_EMAIL@gmail.com",
+        "subject": "={{ $json.subject }}",
+        "emailType": "html",
+        "message": "={{ $json.html }}"
+      }
+    },
+
+    {
+      "id": "drift-declining",
+      "name": "📉 Drift: GET contacts trend=declining",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 880],
+      "parameters": {
+        "url": "http://192.168.0.1148000/api/contacts/?trend=declining",
+        "method": "GET",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "drift-ghosted",
+      "name": "👻 Drift: GET contacts is_ghosted=true",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 1000],
+      "parameters": {
+        "url": "http://192.168.0.1148000/api/contacts/?is_ghosted=true",
+        "method": "GET",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "detect-drift",
+      "name": "⚙️ Detect New Drift (stateful)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 940],
+      "parameters": {
+        "jsCode": "// REAL-TIME DRIFT DETECTOR\n// Fires an alert email ONLY when contacts NEWLY enter declining/ghosted.\n// Uses n8n workflow static data to remember the previous state.\n// drift is_ghosted is a boolean on the contact document.\n\nconst declining = $('📉 Drift: GET contacts trend=declining').item.json.contacts || [];\nconst ghosted   = $('👻 Drift: GET contacts is_ghosted=true').item.json.contacts || [];\n\n// Persistent state across runs (stored in n8n)\nconst store     = $getWorkflowStaticData('global');\nconst prevDecl  = new Set(store.prevDeclining || []);\nconst prevGhost = new Set(store.prevGhosted   || []);\n\n// Only contacts that weren't in the last snapshot\nconst newlyDeclining = declining.filter(c => !prevDecl.has(c.contact_id));\nconst newlyGhosted   = ghosted.filter(c   => !prevGhost.has(c.contact_id));\n\n// Save current snapshot\nstore.prevDeclining = declining.map(c => c.contact_id);\nstore.prevGhosted   = ghosted.map(c   => c.contact_id);\n\nconst TAG_BG = { close_friend:'#AFFFB0', family:'#7B61FF', work:'#00BFFF', mentor:'#F5FF4E', romantic:'#FF6BBA', acquaintance:'#e0e0e0' };\nconst TAG_FG = { family:'#fff', close_friend:'#111', work:'#111', mentor:'#111', romantic:'#111', acquaintance:'#555' };\nconst scoreColor = s => s >= 70 ? '#AFFFB0' : s >= 40 ? '#F5FF4E' : '#FF4545';\nconst time = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });\n\nconst miniCard = (c, accent) => {\n  const score = Math.round(c.health_score || 0);\n  const tag   = c.tag\n    ? `<span style=\"background:${TAG_BG[c.tag]||'#e0e0e0'};color:${TAG_FG[c.tag]||'#111'};border:1.5px solid #111;padding:1px 6px;font-size:9px;font-weight:800;margin-left:8px;\">${c.tag.replace(/_/g,' ').toUpperCase()}</span>`\n    : '';\n  return `\n  <div style=\"border:2px solid ${accent};background:#fff;padding:12px 14px;margin-bottom:8px;box-shadow:3px 3px 0 ${accent};display:flex;justify-content:space-between;align-items:center;\">\n    <div>\n      <div style=\"display:flex;align-items:center;flex-wrap:wrap;\"><b>${c.name||c.contact_id}</b>${tag}</div>\n      <div style=\"font-size:10px;color:#888;margin-top:3px;\">${c.total_messages||0} msgs &nbsp;·&nbsp; last seen ${c.days_since||0}d ago</div>\n    </div>\n    <span style=\"font-size:24px;font-weight:800;color:${scoreColor(score)};\">${score}</span>\n  </div>`;\n};\n\nconst total = newlyDeclining.length + newlyGhosted.length;\nconst hasAlerts = total > 0;\n\nconst declSection  = newlyDeclining.length\n  ? `<div style=\"margin-top:14px;\"><div style=\"font-size:10px;letter-spacing:2px;opacity:.55;margin-bottom:8px;border-bottom:2px solid #111;padding-bottom:5px;\">↓ NEWLY DECLINING (${newlyDeclining.length})</div>${newlyDeclining.map(c=>miniCard(c,'#F5FF4E')).join('')}</div>`\n  : '';\nconst ghostSection = newlyGhosted.length\n  ? `<div style=\"margin-top:14px;\"><div style=\"font-size:10px;letter-spacing:2px;opacity:.55;margin-bottom:8px;border-bottom:2px solid #111;padding-bottom:5px;\">👻 NEWLY GHOSTED (${newlyGhosted.length})</div>${newlyGhosted.map(c=>miniCard(c,'#FF4545')).join('')}</div>`\n  : '';\n\nreturn [{ json: {\n  hasAlerts,\n  total,\n  subject: `⚡ Live Drift Alert — ${total} new change(s) at ${time}`,\n  html: `<!DOCTYPE html><html><body style=\"font-family:monospace;background:#F5F0E8;margin:0;padding:0;\">\n<div style=\"max-width:580px;margin:0 auto;padding:24px;\">\n  <div style=\"background:#111;color:#AFFFB0;padding:16px 22px;border:3px solid #111;\">\n    <div style=\"font-size:24px;letter-spacing:4px;font-weight:800;\">AUTOPILOT — LIVE</div>\n    <div style=\"color:#FF4545;font-size:10px;letter-spacing:3px;margin-top:5px;\">⚡ REAL-TIME DRIFT ALERT &nbsp;·&nbsp; ${time}</div>\n  </div>\n  ${declSection}${ghostSection}\n  <div style=\"margin-top:16px;font-size:10px;opacity:.35;text-align:center;letter-spacing:2px;\">AUTOPILOT SOCIAL &nbsp;·&nbsp; CHECKS EVERY 30 MINUTES</div>\n</div></body></html>`,\n}}];"
+      }
+    },
+
+    {
+      "id": "check-drift",
+      "name": "🚨 New drift contacts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [980, 940],
+      "parameters": {
+        "conditions": {
+          "boolean": [{ "value1": "={{ $json.hasAlerts }}", "operation": "equal", "value2": true }]
+        }
+      }
+    },
+
+    {
+      "id": "email-drift",
+      "name": "📧 Email: Drift Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1260, 880],
+      "parameters": {
+        "fromEmail": "autopilot@yourdomain.com",
+        "toEmail": "YOUR_EMAIL@gmail.com",
+        "subject": "={{ $json.subject }}",
+        "emailType": "html",
+        "message": "={{ $json.html }}"
+      }
+    },
+
+    {
+      "id": "dispatch",
+      "name": "📱 Dispatch Message (WhatsApp/Telegram)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, 1120],
+      "parameters": {
+        "jsCode": "// N8N_SEND_MESSAGE_WEBHOOK handler\n// Triggered from frontend /alerts and /reminders when user clicks \"Send\"\n// Payload sent by app/services/n8n_client.py send_message()\n//\n// Action document fields that arrive:\n//   action_id, contact_id, contact_name, suggested_message,\n//   phone_number, platform, urgency, action_type, reason\n//\n// Status lifecycle:  pending → sent  (success)\n//                    pending → pending (failure, keep retrying)\n\nconst body = $input.item.json.body || $input.item.json;\n\nconst actionId  = String(body.action_id  || '');\nconst contactId = body.contact_id        || '';\nconst name      = body.contact_name      || 'Unknown';\nconst message   = body.suggested_message || body.message || '';\nconst phone     = body.phone_number      || '';\nconst platform  = (body.platform         || 'whatsapp').toLowerCase();\nconst urgency   = (body.urgency          || 'medium').toLowerCase();\nconst type      = body.action_type       || 'reconnect';\n\nconsole.log(`[DISPATCH] ${platform.toUpperCase()} → ${name} | urgency=${urgency} | \"${message.slice(0,60)}\"`);\n\n// ── PLUG IN YOUR REAL API CALL HERE ──────────────────────────────────────\n//\n// WhatsApp Cloud API:\n//   await $http.request({\n//     method: 'POST',\n//     url: 'https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/messages',\n//     headers: { Authorization: 'Bearer YOUR_ACCESS_TOKEN', 'Content-Type': 'application/json' },\n//     body: { messaging_product: 'whatsapp', to: phone, type: 'text', text: { body: message } }\n//   });\n//\n// Telegram Bot API:\n//   await $http.request({\n//     method: 'POST',\n//     url: 'https://api.telegram.org/bot{YOUR_BOT_TOKEN}/sendMessage',\n//     body: { chat_id: phone, text: message }\n//   });\n//\n// ─────────────────────────────────────────────────────────────────────────\n\n// Simulated success — replace `true` with actual API call result\nconst dispatched = true;\n\nreturn [{ json: {\n  dispatched,\n  action_id:    actionId,\n  contact_id:   contactId,\n  contact_name: name,\n  platform,\n  phone,\n  urgency,\n  action_type:  type,\n  message,\n  new_status:   dispatched ? 'sent' : 'pending',\n  dispatched_at: new Date().toISOString(),\n}}];"
+      }
+    },
+
+    {
+      "id": "check-dispatch",
+      "name": "✅ Dispatched OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [660, 1120],
+      "parameters": {
+        "conditions": {
+          "boolean": [{ "value1": "={{ $json.dispatched }}", "operation": "equal", "value2": true }]
+        }
+      }
+    },
+
+    {
+      "id": "patch-sent",
+      "name": "✅ PATCH action → status=sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [920, 1060],
+      "parameters": {
+        "url": "=http://192.168.0.1148000/api/actions/{{ encodeURIComponent($json.action_id) }}/status",
+        "method": "PATCH",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [{ "name": "status", "value": "sent" }]
+        },
+        "options": {}
+      }
+    },
+
+    {
+      "id": "respond-sent",
+      "name": "↩ Respond: { ok: true, status: sent }",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1180, 1060],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, status: 'sent', action_id: $('📱 Dispatch Message (WhatsApp/Telegram)').item.json.action_id }) }}"
+      }
+    },
+
+    {
+      "id": "respond-failed",
+      "name": "↩ Respond: { ok: false, status: failed }",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [920, 1220],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, status: 'failed', action_id: $('📱 Dispatch Message (WhatsApp/Telegram)').item.json.action_id }) }}"
+      }
+    },
+
+    {
+      "id": "test-confirm",
+      "name": "🏓 Confirm n8n connectivity",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, 1340],
+      "parameters": {
+        "jsCode": "// N8N_TEST_WEBHOOK handler\n// Called by the frontend 'Automation Controls' bar → Test Connection button\n// Returns a simple JSON payload that the frontend displays as a success banner\nconsole.log('[N8N_TEST_WEBHOOK] Connectivity check at', new Date().toISOString());\nreturn [{ json: {\n  ok:             true,\n  message:        'n8n is connected and responding to Autopilot Social',\n  timestamp:      new Date().toISOString(),\n  active_flows: [\n    '6h pipeline trigger + digest email',\n    'monday weekly report',\n    '30min real-time drift alerts',\n    'send message dispatcher (WhatsApp/Telegram)',\n    'action status feedback loop',\n  ],\n}}];"
+      }
+    },
+
+    {
+      "id": "respond-test",
+      "name": "↩ Respond: { ok: true } to frontend",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [660, 1340],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}"
+      }
+    }
+
+  ],
+
+  "connections": {
+
+    "⏰ Every 6 Hours": {
+      "main": [[{ "node": "🚀 POST /api/pipeline/run", "type": "main", "index": 0 }]]
+    },
+    "🚀 POST /api/pipeline/run": {
+      "main": [[{ "node": "⏳ Wait 30s", "type": "main", "index": 0 }]]
+    },
+    "⏳ Wait 30s": {
+      "main": [[{ "node": "📡 GET /api/pipeline/status", "type": "main", "index": 0 }]]
+    },
+    "📡 GET /api/pipeline/status": {
+      "main": [[{ "node": "✅ Status = completed?", "type": "main", "index": 0 }]]
+    },
+    "✅ Status = completed?": {
+      "main": [
+        [
+          { "node": "📊 GET /api/contacts/summary",      "type": "main", "index": 0 },
+          { "node": "📋 GET /api/actions?status=pending", "type": "main", "index": 0 }
+        ],
+        [{ "node": "🔁 Wait 15s & Retry", "type": "main", "index": 0 }]
+      ]
+    },
+    "🔁 Wait 15s & Retry": {
+      "main": [[{ "node": "📡 GET /api/pipeline/status", "type": "main", "index": 0 }]]
+    },
+    "📊 GET /api/contacts/summary": {
+      "main": [[{ "node": "⚙️ Split Actions by Urgency", "type": "main", "index": 0 }]]
+    },
+    "📋 GET /api/actions?status=pending": {
+      "main": [[{ "node": "⚙️ Split Actions by Urgency", "type": "main", "index": 0 }]]
+    },
+    "⚙️ Split Actions by Urgency": {
+      "main": [[
+        { "node": "🔴 Has CRITICAL actions?",  "type": "main", "index": 0 },
+        { "node": "📬 Has ANY pending actions?","type": "main", "index": 0 }
+      ]]
+    },
+    "🔴 Has CRITICAL actions?": {
+      "main": [
+        [{ "node": "📝 Build Critical Alert Email", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "📬 Has ANY pending actions?": {
+      "main": [
+        [{ "node": "📝 Build 6h Digest Email", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "📝 Build Critical Alert Email": {
+      "main": [[{ "node": "📧 Email: Critical Alert", "type": "main", "index": 0 }]]
+    },
+    "📝 Build 6h Digest Email": {
+      "main": [[{ "node": "📧 Email: 6h Digest", "type": "main", "index": 0 }]]
+    },
+
+    "📅 Monday 8am": {
+      "main": [[
+        { "node": "📊 Weekly: GET /api/contacts/summary",      "type": "main", "index": 0 },
+        { "node": "⚠️ Weekly: GET contacts trend=at_risk",    "type": "main", "index": 0 },
+        { "node": "📉 Weekly: GET contacts trend=declining",  "type": "main", "index": 0 }
+      ]]
+    },
+    "📊 Weekly: GET /api/contacts/summary": {
+      "main": [[{ "node": "📝 Build Weekly Report Email", "type": "main", "index": 0 }]]
+    },
+    "⚠️ Weekly: GET contacts trend=at_risk": {
+      "main": [[{ "node": "📝 Build Weekly Report Email", "type": "main", "index": 0 }]]
+    },
+    "📉 Weekly: GET contacts trend=declining": {
+      "main": [[{ "node": "📝 Build Weekly Report Email", "type": "main", "index": 0 }]]
+    },
+    "📝 Build Weekly Report Email": {
+      "main": [[{ "node": "📧 Email: Weekly Report", "type": "main", "index": 0 }]]
+    },
+
+    "⚡ Every 30 Minutes": {
+      "main": [[
+        { "node": "📉 Drift: GET contacts trend=declining",  "type": "main", "index": 0 },
+        { "node": "👻 Drift: GET contacts is_ghosted=true",  "type": "main", "index": 0 }
+      ]]
+    },
+    "📉 Drift: GET contacts trend=declining": {
+      "main": [[{ "node": "⚙️ Detect New Drift (stateful)", "type": "main", "index": 0 }]]
+    },
+    "👻 Drift: GET contacts is_ghosted=true": {
+      "main": [[{ "node": "⚙️ Detect New Drift (stateful)", "type": "main", "index": 0 }]]
+    },
+    "⚙️ Detect New Drift (stateful)": {
+      "main": [[{ "node": "🚨 New drift contacts?", "type": "main", "index": 0 }]]
+    },
+    "🚨 New drift contacts?": {
+      "main": [
+        [{ "node": "📧 Email: Drift Alert", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+
+    "🔔 Webhook: N8N_SEND_MESSAGE_WEBHOOK": {
+      "main": [[{ "node": "📱 Dispatch Message (WhatsApp/Telegram)", "type": "main", "index": 0 }]]
+    },
+    "📱 Dispatch Message (WhatsApp/Telegram)": {
+      "main": [[{ "node": "✅ Dispatched OK?", "type": "main", "index": 0 }]]
+    },
+    "✅ Dispatched OK?": {
+      "main": [
+        [{ "node": "✅ PATCH action → status=sent",          "type": "main", "index": 0 }],
+        [{ "node": "↩ Respond: { ok: false, status: failed }","type": "main", "index": 0 }]
+      ]
+    },
+    "✅ PATCH action → status=sent": {
+      "main": [[{ "node": "↩ Respond: { ok: true, status: sent }", "type": "main", "index": 0 }]]
+    },
+
+    "🔔 Webhook: N8N_TEST_WEBHOOK": {
+      "main": [[{ "node": "🏓 Confirm n8n connectivity", "type": "main", "index": 0 }]]
+    },
+    "🏓 Confirm n8n connectivity": {
+      "main": [[{ "node": "↩ Respond: { ok: true } to frontend", "type": "main", "index": 0 }]]
+    }
+
+  }
+}
