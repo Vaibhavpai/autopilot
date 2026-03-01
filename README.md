@@ -10,6 +10,9 @@ AI-driven relationship intelligence pipeline built with FastAPI.
 - **n8n** — Automation (schedules, emails)
 - **APScheduler** — In-process scheduling
 
+## Demo Video
+👉 [Watch the Autopilot Social Prototype Demo here](https://drive.google.com/drive/folders/1-WFl1Zencjf7AJKikAyz5n1zJK5-1Lf8?usp=sharing)
+
 ---
 
 ## Quick Start
@@ -22,12 +25,22 @@ pip install -r requirements.txt
 # 2. Set env vars
 cp .env.example .env
 # → Add your ANTHROPIC_API_KEY
+# → Add your MongoDB Connection String to MONGO_URL
+# → Make sure VITE_API_BASE_URL in frontend/.env points to your backend (e.g. http://127.0.0.1:8000)
 
-# 3. Run the server
+# 3. Run the backend server
 uvicorn app.main:app --reload --port 8000
 
 # 4. Open API docs
 open http://localhost:8000/docs
+
+# 5. In a new terminal, run the frontend
+cd frontend
+npm install
+npm run dev
+
+# 6. Open Frontend
+open http://localhost:5173
 ```
 
 ---
