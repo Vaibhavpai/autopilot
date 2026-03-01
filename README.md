@@ -97,14 +97,18 @@ curl http://localhost:8000/api/actions/
 
 ---
 
-## Scoring Formula
+## Machine Learning Scoring & Detection
+
+Instead of a basic formula, Autopilot uses trained ML models to track relationship health:
+- **Delay Detection:** `IsolationForest` to flag anomalous response delays.
+- **Inactivity Scoring:** `RandomForest` & `IsolationForest` combined to score inactivity risks.
+- **Missing Mentions:** `XGBoost` for detecting forgotten follow-ups or critical terms.
+- **Buried Plans:** `LightGBM` for surfacing buried plans from older messages.
 
 ```
-Health Score = 
-  0.30 × Recency Score     (exponential decay from last message)
-  0.30 × Frequency Score   (msgs/week over last 30d, normalized)
-  0.20 × Response Ratio    (% of your msgs they reply to)
-  0.20 × Sentiment Score   (VADER compound, normalized 0-100)
+Health Score (ML Predicted) =
+  Features extracted (Response delay max, activity windows, msg gaps)
+  Predicted via Inactivity & Anomaly Models
 ```
 
 ## Tags
@@ -137,30 +141,21 @@ Health Score =
 ## Project Structure
 
 ```
-autopilot-backend/
-├── app/
-│   ├── main.py                    # FastAPI app
-│   ├── api/
-│   │   ├── contacts.py            # GET contacts, summary
-│   │   ├── pipeline.py            # Trigger pipeline runs
-│   │   ├── actions.py             # AI action suggestions
-│   │   └── ingest.py              # File upload endpoints
-│   ├── core/
-│   │   ├── config.py              # Settings / env vars
-│   │   ├── database.py            # In-memory store
-│   │   └── scheduler.py           # APScheduler setup
-│   ├── models/
-│   │   └── schemas.py             # Pydantic models
-│   ├── parsers/
-│   │   ├── whatsapp_parser.py     # .txt log parser
-│   │   ├── telegram_parser.py     # result.json parser
-│   │   ├── csv_parser.py          # generic CSV parser
-│   │   └── synthetic_generator.py # demo data generator
-│   └── services/
-│       ├── scoring_engine.py      # ⭐ Scoring + drift detection
-│       ├── action_generator.py    # ⭐ Claude AI actions
-│       ├── pipeline.py            # ⭐ Orchestrator
-│       └── n8n_client.py          # Webhook client
-└── n8n/
-    └── autopilot_workflow.json    # Import into n8n
+autopilot/
+├── app/                           # FastAPI backend app
+│   ├── main.py
+│   ├── api/                       # API Routes (contacts, pipelines, ingest)
+│   ├── core/                      # MongoDB configs & schedulers
+│   ├── models/                    # Pydantic models
+│   ├── parsers/                   # WhatsApp, Telegram, CSV parsers
+│   └── services/                  # Action generation & pipeline orchestration
+├── frontend/                      # React/Vite Frontend UI
+│   └── src/api.js                 # Centralised API handlers
+├── model/                         # Machine Learning pipelines & scripts
+│   ├── train_buried.py            # LightGBM plan detection
+│   ├── train_delay.py             # IsolationForest delay anomaly
+│   ├── train_long_inactive.py     # Random forest inactivity
+│   ├── train_missing.py           # XGBoost missing mentions
+│   └── models/                    # Pre-trained .joblib weights
+└── n8n/                           # n8n Automation Workflows
 ```
